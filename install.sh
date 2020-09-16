@@ -11,8 +11,8 @@ dcr="$dc run --rm"
 log_file="sentry_install_log-`date +'%Y-%m-%d_%H-%M-%S'`.txt"
 exec &> >(tee -a "$log_file")
 
-MIN_DOCKER_VERSION='17.05.0'
-MIN_COMPOSE_VERSION='1.23.0'
+MIN_DOCKER_VERSION='19.03.8'
+MIN_COMPOSE_VERSION='1.24.1'
 MIN_RAM=2400 # MB
 
 SENTRY_CONFIG_PY='sentry/sentry.conf.py'
@@ -60,22 +60,22 @@ trap_with_arg() {
 DID_CLEAN_UP=0
 # the cleanup function will be the exit point
 cleanup () {
-  if [ "$DID_CLEAN_UP" -eq 1 ]; then
+  if [[ "$DID_CLEAN_UP" -eq 1 ]]; then
     return 0;
   fi
   DID_CLEAN_UP=1
 
-  if [ "$1" != "EXIT" ]; then
+  if [[ "$1" != "EXIT" ]]; then
     echo "An error occurred, caught SIG$1 on line $2";
 
-    if [[ "$MINIMIZE_DOWNTIME" ]]; then
+    if [[ -n "$MINIMIZE_DOWNTIME" ]]; then
       echo "*NOT* cleaning up, to clean your environment run \"docker-compose stop\"."
     else
       echo "Cleaning up..."
     fi
   fi
 
-  if [[ ! "$MINIMIZE_DOWNTIME" ]]; then
+  if [[ -z "$MINIMIZE_DOWNTIME" ]]; then
     $dc stop &> /dev/null
   fi
 }
@@ -93,7 +93,7 @@ function ver () { echo "$@" | awk -F. '{ printf("%d%03d%03d", $1,$2,$3); }'; }
 
 # Thanks to https://stackoverflow.com/a/25123013/90297 for the quick `sed` pattern
 function ensure_file_from_example {
-  if [ -f "$1" ]; then
+  if [[ -f "$1" ]]; then
     echo "$1 already exists, skipped creation."
   else
     echo "Creating $1..."
@@ -101,17 +101,17 @@ function ensure_file_from_example {
   fi
 }
 
-if [ $(ver $DOCKER_VERSION) -lt $(ver $MIN_DOCKER_VERSION) ]; then
+if [[ "$(ver $DOCKER_VERSION)" -lt "$(ver $MIN_DOCKER_VERSION)" ]]; then
   echo "FAIL: Expected minimum Docker version to be $MIN_DOCKER_VERSION but found $DOCKER_VERSION"
   exit 1
 fi
 
-if [ $(ver $COMPOSE_VERSION) -lt $(ver $MIN_COMPOSE_VERSION) ]; then
+if [[ "$(ver $COMPOSE_VERSION)" -lt "$(ver $MIN_COMPOSE_VERSION)" ]]; then
   echo "FAIL: Expected minimum docker-compose version to be $MIN_COMPOSE_VERSION but found $COMPOSE_VERSION"
   exit 1
 fi
 
-if [ "$RAM_AVAILABLE_IN_DOCKER" -lt "$MIN_RAM" ]; then
+if [[ "$RAM_AVAILABLE_IN_DOCKER" -lt "$MIN_RAM" ]]; then
   echo "FAIL: Expected minimum RAM available to Docker to be $MIN_RAM MB but found $RAM_AVAILABLE_IN_DOCKER MB"
   exit 1
 fi
@@ -119,9 +119,9 @@ fi
 #SSE4.2 required by Clickhouse (https://clickhouse.yandex/docs/en/operations/requirements/)
 # On KVM, cpuinfo could falsely not report SSE 4.2 support, so skip the check. https://github.com/ClickHouse/ClickHouse/issues/20#issuecomment-226849297
 IS_KVM=$(docker run --rm busybox grep -c 'Common KVM processor' /proc/cpuinfo || :)
-if (($IS_KVM == 0)); then
+if [[ "$IS_KVM" -eq 0 ]]; then
   SUPPORTS_SSE42=$(docker run --rm busybox grep -c sse4_2 /proc/cpuinfo || :)
-  if (($SUPPORTS_SSE42 == 0)); then
+  if [[ "$SUPPORTS_SSE42" -eq 0 ]]; then
     echo "FAIL: The CPU your machine is running on does not support the SSE 4.2 instruction set, which is required for one of the services Sentry uses (Clickhouse). See https://git.io/JvLDt for more info."
     exit 1
   fi
@@ -157,7 +157,7 @@ fi
 
 replace_tsdb() {
   if (
-    [ -f "$SENTRY_CONFIG_PY" ] &&
+    [[ -f "$SENTRY_CONFIG_PY" ]] &&
     ! grep -xq 'SENTRY_TSDB = "sentry.tsdb.redissnuba.RedisSnubaTSDB"' "$SENTRY_CONFIG_PY"
   ); then
     # Do NOT indent the following string as it would be reflected in the end result,
@@ -218,7 +218,7 @@ $dc build --force-rm --parallel
 echo ""
 echo "Docker images built."
 
-if [[ "$MINIMIZE_DOWNTIME" ]]; then
+if [[ -n "$MINIMIZE_DOWNTIME" ]]; then
   # Stop everything but relay and nginx
   $dc rm -fsv $($dc config --services | grep -v -E '^(nginx|relay)$')
 else
@@ -230,51 +230,23 @@ else
 fi
 
 ZOOKEEPER_SNAPSHOT_FOLDER_EXISTS=$($dcr zookeeper bash -c 'ls 2>/dev/null -Ubad1 -- /var/lib/zookeeper/data/version-2 | wc -l | tr -d '[:space:]'')
-if [ "$ZOOKEEPER_SNAPSHOT_FOLDER_EXISTS" -eq "1" ]; then
+if [[ "$ZOOKEEPER_SNAPSHOT_FOLDER_EXISTS" -eq 1 ]]; then
   ZOOKEEPER_LOG_FILE_COUNT=$($dcr zookeeper bash -c 'ls 2>/dev/null -Ubad1 -- /var/lib/zookeeper/log/version-2/* | wc -l | tr -d '[:space:]'')
   ZOOKEEPER_SNAPSHOT_FILE_COUNT=$($dcr zookeeper bash -c 'ls 2>/dev/null -Ubad1 -- /var/lib/zookeeper/data/version-2/* | wc -l | tr -d '[:space:]'')
   # This is a workaround for a ZK upgrade bug: https://issues.apache.org/jira/browse/ZOOKEEPER-3056
-  if [ "$ZOOKEEPER_LOG_FILE_COUNT" -gt "0" ] && [ "$ZOOKEEPER_SNAPSHOT_FILE_COUNT" -eq "0" ]; then
+  if [[ "$ZOOKEEPER_LOG_FILE_COUNT" -gt 0 ]] && [[ "$ZOOKEEPER_SNAPSHOT_FILE_COUNT" -eq 0 ]]; then
     $dcr -v $(pwd)/zookeeper:/temp zookeeper bash -c 'cp /temp/snapshot.0 /var/lib/zookeeper/data/version-2/snapshot.0'
     $dc run -d -e ZOOKEEPER_SNAPSHOT_TRUST_EMPTY=true zookeeper
   fi
 fi
 
-# [begin] Snuba/Clickhouse transactions table rebuild
-clickhouse_query () { $dcr clickhouse clickhouse-client --host clickhouse -q "$1"; }
-$dc up -d clickhouse
-set +e
-CLICKHOUSE_CLIENT_MAX_RETRY=5
-# Wait until clickhouse server is up
-until clickhouse_query 'SELECT 1' > /dev/null; do
-  ((CLICKHOUSE_CLIENT_MAX_RETRY--))
-  [[ CLICKHOUSE_CLIENT_MAX_RETRY -eq 0 ]] && echo "Clickhouse server failed to come up in 5 tries." && exit 1;
-  echo "Trying again. Remaining tries #$CLICKHOUSE_CLIENT_MAX_RETRY"
-  sleep 0.5;
-done
-set -e
-
-SNUBA_HAS_TRANSACTIONS_TABLE=$(clickhouse_query 'EXISTS TABLE transactions_local' | tr -d '\n\r')
-SNUBA_TRANSACTIONS_NEEDS_UPDATE=$([ "$SNUBA_HAS_TRANSACTIONS_TABLE" == "1" ] && clickhouse_query 'SHOW CREATE TABLE transactions_local' | grep -v 'SAMPLE BY' || echo '')
-
-if [ "$SNUBA_TRANSACTIONS_NEEDS_UPDATE" ]; then
-  SNUBA_TRANSACTIONS_TABLE_CONTENTS=$(clickhouse_query "SELECT * FROM transactions_local LIMIT 1")
-  if [ -z $SNUBA_TRANSACTIONS_TABLE_CONTENTS ]; then
-    echo "Dropping the old transactions table from Clickhouse...";
-    clickhouse_query 'DROP TABLE transactions_local'
-    echo "Done."
-  else
-    echo "Seems like your Clickhouse transactions table is old and non-empty. You may experience issues if/when you have more than 10000 records in this table. See https://github.com/getsentry/sentry/pull/19882 for more information and consider disabling the 'discover2.tags_facet_enable_sampling' feature flag.";
-  fi
-fi
-# [end] Snuba/Clickhouse transactions table rebuild
-
 echo "Bootstrapping and migrating Snuba..."
-$dcr snuba-api bootstrap --force
+$dcr snuba-api bootstrap --no-migrate --force
+$dcr snuba-api migrations migrate --force
 echo ""
 
 # Very naively check whether there's an existing sentry-postgres volume and the PG version in it
-if [[ $(docker volume ls -q --filter name=sentry-postgres) && $(docker run --rm -v sentry-postgres:/db busybox cat /db/PG_VERSION 2>/dev/null) == "9.5" ]]; then
+if [[ -n "$(docker volume ls -q --filter name=sentry-postgres)" && "$(docker run --rm -v sentry-postgres:/db busybox cat /db/PG_VERSION 2>/dev/null)" == "9.5" ]]; then
   docker volume rm sentry-postgres-new || true
   # If this is Postgres 9.5 data, start upgrading it to 9.6 in a new volume
   docker run --rm \
@@ -296,7 +268,7 @@ fi
 
 echo ""
 echo "Setting up database..."
-if [ $CI ] || [ $SKIP_USER_PROMPT == 1 ]; then
+if [[ -n "$CI" || "$SKIP_USER_PROMPT" == 1 ]]; then
   $dcr web upgrade --noinput
   echo ""
   echo "Did not prompt for user creation due to non-interactive shell."
@@ -310,7 +282,7 @@ fi
 
 
 SENTRY_DATA_NEEDS_MIGRATION=$(docker run --rm -v sentry-data:/data alpine ash -c "[ ! -d '/data/files' ] && ls -A1x /data | wc -l || true")
-if [ "$SENTRY_DATA_NEEDS_MIGRATION" ]; then
+if [[ -n "$SENTRY_DATA_NEEDS_MIGRATION" ]]; then
   echo "Migrating file storage..."
   # Use the web (Sentry) image so the file owners are kept as sentry:sentry
   # The `\"` escape pattern is to make this compatible w/ Git Bash on Windows. See #329.
@@ -319,7 +291,7 @@ if [ "$SENTRY_DATA_NEEDS_MIGRATION" ]; then
 fi
 
 
-if [ ! -f "$RELAY_CREDENTIALS_JSON" ]; then
+if [[ ! -f "$RELAY_CREDENTIALS_JSON" ]]; then
   echo ""
   echo "Generating Relay credentials..."
 

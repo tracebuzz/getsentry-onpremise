@@ -1,11 +1,11 @@
-# Sentry Nightly On-Premise [![Build Status][build-status-image]][build-status-url]
+# Self-Hosted Sentry Nightly [![Build Status][build-status-image]][build-status-url]
 
 Official bootstrap for running your own [Sentry](https://sentry.io/) with [Docker](https://www.docker.com/).
 
 ## Requirements
 
- * Docker 17.05.0+
- * Compose 1.23.0+
+ * Docker 19.03.8+
+ * Compose 1.24.1+
 
 ## Minimum Hardware Requirements:
 
